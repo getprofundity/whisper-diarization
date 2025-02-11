@@ -3,6 +3,10 @@ import logging
 import os
 import re
 import subprocess
+import tempfile
+import shutil
+import json
+import numpy as np
 
 import faster_whisper
 import torch
@@ -32,6 +36,52 @@ from helpers import (
 )
 
 mtypes = {"cpu": "int8", "cuda": "float16"}
+
+# Set up cache directory for models
+CACHE_DIR = os.path.join(os.getcwd(), "checkpoints")
+WHISPER_CACHE_DIR = os.path.join(CACHE_DIR, "whisper")
+ALIGNMENT_CACHE_DIR = os.path.join(CACHE_DIR, "alignment")
+PUNCT_CACHE_DIR = os.path.join(CACHE_DIR, "punctuation")
+NEMO_CACHE_DIR = os.path.join(CACHE_DIR, "nemo")
+
+# Create temporary directory for processing
+TEMP_DIR = tempfile.mkdtemp()
+
+# Create cache directories if they don't exist
+os.makedirs(WHISPER_CACHE_DIR, exist_ok=True)
+os.makedirs(ALIGNMENT_CACHE_DIR, exist_ok=True)
+os.makedirs(PUNCT_CACHE_DIR, exist_ok=True)
+os.makedirs(NEMO_CACHE_DIR, exist_ok=True)
+
+# Set NeMo cache directory
+os.environ["NEMO_CACHE_DIR"] = NEMO_CACHE_DIR
+
+
+# Ensure cleanup of temporary directory
+def cleanup_temp():
+    """Clean up temporary directory and its contents."""
+    if os.path.exists(TEMP_DIR):
+        shutil.rmtree(TEMP_DIR)
+
+
+# Register cleanup on normal program exit
+import atexit
+
+atexit.register(cleanup_temp)
+
+
+def load_cached_alignment_model(device, dtype):
+    """Load the alignment model with caching support."""
+    # Set HF cache directory for the alignment model
+    os.environ["TRANSFORMERS_CACHE"] = ALIGNMENT_CACHE_DIR
+    os.environ["HF_HOME"] = ALIGNMENT_CACHE_DIR
+    # Use the default model path from the library
+    return load_alignment_model(
+        device=device,
+        model_path="MahmoudAshraf/mms-300m-1130-forced-aligner",
+        dtype=dtype,
+    )
+
 
 # Initialize parser
 parser = argparse.ArgumentParser()
@@ -94,7 +144,7 @@ if args.stemming:
     # Isolate vocals from the rest of the audio
 
     return_code = os.system(
-        f'python -m demucs.separate -n htdemucs --two-stems=vocals "{args.audio}" -o temp_outputs --device "{args.device}"'
+        f'python -m demucs.separate -n htdemucs --two-stems=vocals "{args.audio}" -o "{TEMP_DIR}" --device "{args.device}"'
     )
 
     if return_code != 0:
@@ -105,7 +155,7 @@ if args.stemming:
         vocal_target = args.audio
     else:
         vocal_target = os.path.join(
-            "temp_outputs",
+            TEMP_DIR,
             "htdemucs",
             os.path.splitext(os.path.basename(args.audio))[0],
             "vocals.wav",
@@ -115,13 +165,25 @@ else:
 
 logging.info("Starting Nemo process with vocal_target: ", vocal_target)
 nemo_process = subprocess.Popen(
-    ["python", "nemo_process.py", "-a", vocal_target, "--device", args.device],
+    [
+        "python",
+        "nemo_process.py",
+        "-a",
+        vocal_target,
+        "--device",
+        args.device,
+        "--temp-dir",
+        TEMP_DIR,
+    ],
     stderr=subprocess.PIPE,
 )
-# Transcribe the audio file
 
+# Transcribe the audio file
 whisper_model = faster_whisper.WhisperModel(
-    args.model_name, device=args.device, compute_type=mtypes[args.device]
+    args.model_name,
+    device=args.device,
+    compute_type=mtypes[args.device],
+    download_root=WHISPER_CACHE_DIR,
 )
 whisper_pipeline = faster_whisper.BatchedInferencePipeline(whisper_model)
 audio_waveform = faster_whisper.decode_audio(vocal_target)
@@ -154,9 +216,9 @@ torch.cuda.empty_cache()
 
 
 # Forced Alignment
-alignment_model, alignment_tokenizer = load_alignment_model(
+alignment_model, alignment_tokenizer = load_cached_alignment_model(
     args.device,
-    dtype=torch.float16 if args.device == "cuda" else torch.float32,
+    torch.float16 if args.device == "cuda" else torch.float32,
 )
 
 emissions, stride = generate_emissions(
@@ -195,11 +257,8 @@ assert nemo_return_code == 0, (
     f"\n{nemo_error_trace.decode('utf-8')}"
 )
 
-ROOT = os.getcwd()
-temp_path = os.path.join(ROOT, "temp_outputs")
-
 speaker_ts = []
-with open(os.path.join(temp_path, "pred_rttms", "mono_file.rttm"), "r") as f:
+with open(os.path.join(TEMP_DIR, "pred_rttms", "mono_file.rttm"), "r") as f:
     lines = f.readlines()
     for line in lines:
         line_list = line.split(" ")
@@ -211,7 +270,9 @@ wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
 
 if info.language in punct_model_langs:
     # restoring punctuation in the transcript to help realign the sentences
-    punct_model = PunctuationModel(model="kredor/punctuate-all")
+    punct_model = PunctuationModel(
+        model="kredor/punctuate-all", cache_dir=PUNCT_CACHE_DIR
+    )
 
     words_list = list(map(lambda x: x["word"], wsm))
 
@@ -244,10 +305,58 @@ else:
 wsm = get_realigned_ws_mapping_with_punctuation(wsm)
 ssm = get_sentences_speaker_mapping(wsm, speaker_ts)
 
+# Create word-level output with confidence scores
+word_level_output = []
+for word_info, score in zip(wsm, scores):
+    # Convert log probability to regular probability using exp
+    confidence = float(np.exp(score)) if score is not None else 1.0
+
+    word_entry = {
+        "speaker": word_info["speaker"],  # Already a number
+        "start": word_info["start_time"] / 1000.0,  # Convert to seconds
+        "end": word_info["end_time"] / 1000.0,  # Convert to seconds
+        "word": word_info["word"].strip(),
+        "confidence": confidence,
+    }
+    word_level_output.append(word_entry)
+
+# Create segment-level output with words grouped under each segment
+segment_output = []
+current_word_idx = 0
+for segment in ssm:
+    # Extract speaker number from the "Speaker X" format
+    speaker_id = int(segment["speaker"].split()[-1])
+    segment_entry = {
+        "speaker": speaker_id,  # Use the number instead of string
+        "start": segment["start_time"] / 1000.0,  # Convert to seconds
+        "end": segment["end_time"] / 1000.0,  # Convert to seconds
+        "text": segment["text"].strip(),
+        "words": [],
+    }
+
+    # Add all words that fall within this segment's time range
+    while (
+        current_word_idx < len(word_level_output)
+        and word_level_output[current_word_idx]["start"] <= segment["end_time"] / 1000.0
+    ):
+        if (
+            word_level_output[current_word_idx]["start"]
+            >= segment["start_time"] / 1000.0
+        ):
+            segment_entry["words"].append(word_level_output[current_word_idx])
+        current_word_idx += 1
+
+    segment_output.append(segment_entry)
+
 with open(f"{os.path.splitext(args.audio)[0]}.txt", "w", encoding="utf-8-sig") as f:
     get_speaker_aware_transcript(ssm, f)
 
 with open(f"{os.path.splitext(args.audio)[0]}.srt", "w", encoding="utf-8-sig") as srt:
     write_srt(ssm, srt)
 
-cleanup(temp_path)
+with open(
+    f"{os.path.splitext(args.audio)[0]}_segments.json", "w", encoding="utf-8-sig"
+) as f:
+    json.dump(segment_output, f, indent=2, ensure_ascii=False, default=str)
+
+cleanup(TEMP_DIR)

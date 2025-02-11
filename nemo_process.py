@@ -18,15 +18,19 @@ parser.add_argument(
     default="cuda" if torch.cuda.is_available() else "cpu",
     help="if you have a GPU use 'cuda', otherwise 'cpu'",
 )
+parser.add_argument(
+    "--temp-dir",
+    dest="temp_dir",
+    help="temporary directory for processing",
+    required=True,
+)
 args = parser.parse_args()
 
-# convert audio to mono for NeMo combatibility
+# convert audio to mono for NeMo compatibility
 sound = AudioSegment.from_file(args.audio).set_channels(1)
-ROOT = os.getcwd()
-temp_path = os.path.join(ROOT, "temp_outputs")
-os.makedirs(temp_path, exist_ok=True)
-sound.export(os.path.join(temp_path, "mono_file.wav"), format="wav")
+os.makedirs(args.temp_dir, exist_ok=True)
+sound.export(os.path.join(args.temp_dir, "mono_file.wav"), format="wav")
 
 # Initialize NeMo MSDD diarization model
-msdd_model = NeuralDiarizer(cfg=create_config(temp_path)).to(args.device)
+msdd_model = NeuralDiarizer(cfg=create_config(args.temp_dir)).to(args.device)
 msdd_model.diarize()

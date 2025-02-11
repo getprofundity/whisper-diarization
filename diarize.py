@@ -5,6 +5,8 @@ import re
 import json
 import numpy as np
 from pathlib import Path
+import tempfile
+import shutil
 
 import faster_whisper
 import torch
@@ -45,6 +47,9 @@ ALIGNMENT_CACHE_DIR = os.path.join(CACHE_DIR, "alignment")
 PUNCT_CACHE_DIR = os.path.join(CACHE_DIR, "punctuation")
 NEMO_CACHE_DIR = os.path.join(CACHE_DIR, "nemo")
 
+# Create temporary directory for processing
+TEMP_DIR = tempfile.mkdtemp()
+
 # Create cache directories if they don't exist
 os.makedirs(WHISPER_CACHE_DIR, exist_ok=True)
 os.makedirs(ALIGNMENT_CACHE_DIR, exist_ok=True)
@@ -53,6 +58,19 @@ os.makedirs(NEMO_CACHE_DIR, exist_ok=True)
 
 # Set NeMo cache directory
 os.environ["NEMO_CACHE_DIR"] = NEMO_CACHE_DIR
+
+
+# Ensure cleanup of temporary directory
+def cleanup_temp():
+    """Clean up temporary directory and its contents."""
+    if os.path.exists(TEMP_DIR):
+        shutil.rmtree(TEMP_DIR)
+
+
+# Register cleanup on normal program exit
+import atexit
+
+atexit.register(cleanup_temp)
 
 
 def load_cached_alignment_model(device, dtype):
@@ -129,7 +147,7 @@ if args.stemming:
     # Isolate vocals from the rest of the audio
 
     return_code = os.system(
-        f'python -m demucs.separate -n htdemucs --two-stems=vocals "{args.audio}" -o temp_outputs --device "{args.device}"'
+        f'python -m demucs.separate -n htdemucs --two-stems=vocals "{args.audio}" -o "{TEMP_DIR}" --device "{args.device}"'
     )
 
     if return_code != 0:
@@ -140,7 +158,7 @@ if args.stemming:
         vocal_target = args.audio
     else:
         vocal_target = os.path.join(
-            "temp_outputs",
+            TEMP_DIR,
             "htdemucs",
             os.path.splitext(os.path.basename(args.audio))[0],
             "vocals.wav",
@@ -220,12 +238,10 @@ spans = get_spans(tokens_starred, segments, blank_token)
 word_timestamps = postprocess_results(text_starred, spans, stride, scores)
 
 
-# convert audio to mono for NeMo combatibility
-ROOT = os.getcwd()
-temp_path = os.path.join(ROOT, "temp_outputs")
-os.makedirs(temp_path, exist_ok=True)
+# convert audio to mono for NeMo compatibility
+os.makedirs(TEMP_DIR, exist_ok=True)
 torchaudio.save(
-    os.path.join(temp_path, "mono_file.wav"),
+    os.path.join(TEMP_DIR, "mono_file.wav"),
     torch.from_numpy(audio_waveform).unsqueeze(0).float(),
     16000,
     channels_first=True,
@@ -233,7 +249,7 @@ torchaudio.save(
 
 
 # Initialize NeMo MSDD diarization model
-msdd_model = NeuralDiarizer(cfg=create_config(temp_path)).to(args.device)
+msdd_model = NeuralDiarizer(cfg=create_config(TEMP_DIR)).to(args.device)
 msdd_model.diarize()
 
 del msdd_model
@@ -243,7 +259,7 @@ torch.cuda.empty_cache()
 
 
 speaker_ts = []
-with open(os.path.join(temp_path, "pred_rttms", "mono_file.rttm"), "r") as f:
+with open(os.path.join(TEMP_DIR, "pred_rttms", "mono_file.rttm"), "r") as f:
     lines = f.readlines()
     for line in lines:
         line_list = line.split(" ")
@@ -358,4 +374,4 @@ with open(
     json.dump(segment_output, f, indent=2, ensure_ascii=False, default=str)
 
 
-cleanup(temp_path)
+cleanup(TEMP_DIR)
