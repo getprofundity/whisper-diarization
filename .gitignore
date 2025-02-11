@@ -6,4 +6,5 @@ __pycache__/
 *.json
 *.m4a
 venv
-
+checkpoints/
+temp_outputs/

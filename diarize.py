@@ -4,6 +4,7 @@ import os
 import re
 import json
 import numpy as np
+from pathlib import Path
 
 import faster_whisper
 import torch
@@ -36,6 +37,36 @@ from helpers import (
 )
 
 mtypes = {"cpu": "int8", "cuda": "float16"}
+
+# Set up cache directory for models
+CACHE_DIR = os.path.join(os.getcwd(), "checkpoints")
+WHISPER_CACHE_DIR = os.path.join(CACHE_DIR, "whisper")
+ALIGNMENT_CACHE_DIR = os.path.join(CACHE_DIR, "alignment")
+PUNCT_CACHE_DIR = os.path.join(CACHE_DIR, "punctuation")
+NEMO_CACHE_DIR = os.path.join(CACHE_DIR, "nemo")
+
+# Create cache directories if they don't exist
+os.makedirs(WHISPER_CACHE_DIR, exist_ok=True)
+os.makedirs(ALIGNMENT_CACHE_DIR, exist_ok=True)
+os.makedirs(PUNCT_CACHE_DIR, exist_ok=True)
+os.makedirs(NEMO_CACHE_DIR, exist_ok=True)
+
+# Set NeMo cache directory
+os.environ["NEMO_CACHE_DIR"] = NEMO_CACHE_DIR
+
+
+def load_cached_alignment_model(device, dtype):
+    """Load the alignment model with caching support."""
+    # Set HF cache directory for the alignment model
+    os.environ["TRANSFORMERS_CACHE"] = ALIGNMENT_CACHE_DIR
+    os.environ["HF_HOME"] = ALIGNMENT_CACHE_DIR
+    # Use the default model path from the library
+    return load_alignment_model(
+        device=device,
+        model_path="MahmoudAshraf/mms-300m-1130-forced-aligner",
+        dtype=dtype,
+    )
+
 
 # Initialize parser
 parser = argparse.ArgumentParser()
@@ -121,7 +152,10 @@ else:
 # Transcribe the audio file
 
 whisper_model = faster_whisper.WhisperModel(
-    args.model_name, device=args.device, compute_type=mtypes[args.device]
+    args.model_name,
+    device=args.device,
+    compute_type=mtypes[args.device],
+    download_root=WHISPER_CACHE_DIR,
 )
 whisper_pipeline = faster_whisper.BatchedInferencePipeline(whisper_model)
 audio_waveform = faster_whisper.decode_audio(vocal_target)
@@ -153,9 +187,9 @@ del whisper_model, whisper_pipeline
 torch.cuda.empty_cache()
 
 # Forced Alignment
-alignment_model, alignment_tokenizer = load_alignment_model(
+alignment_model, alignment_tokenizer = load_cached_alignment_model(
     args.device,
-    dtype=torch.float16 if args.device == "cuda" else torch.float32,
+    torch.float16 if args.device == "cuda" else torch.float32,
 )
 
 emissions, stride = generate_emissions(
@@ -224,7 +258,9 @@ wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
 
 if info.language in punct_model_langs:
     # restoring punctuation in the transcript to help realign the sentences
-    punct_model = PunctuationModel(model="kredor/punctuate-all")
+    punct_model = PunctuationModel(
+        model="kredor/punctuate-all", cache_dir=PUNCT_CACHE_DIR
+    )
 
     words_list = list(map(lambda x: x["word"], wsm))
 
