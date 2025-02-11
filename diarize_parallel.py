@@ -34,6 +34,7 @@ from helpers import (
     whisper_langs,
     write_srt,
 )
+from diarization_utils import DiarizationPipeline
 
 mtypes = {"cpu": "int8", "cuda": "float16"}
 
@@ -137,226 +138,73 @@ parser.add_argument(
     help="if you have a GPU use 'cuda', otherwise 'cpu'",
 )
 
-args = parser.parse_args()
-language = process_language_arg(args.language, args.model_name)
 
-if args.stemming:
-    # Isolate vocals from the rest of the audio
+def main():
+    args = parser.parse_args()
+    args.language = process_language_arg(args.language, args.model_name)
 
-    return_code = os.system(
-        f'python -m demucs.separate -n htdemucs --two-stems=vocals "{args.audio}" -o "{TEMP_DIR}" --device "{args.device}"'
-    )
+    # Initialize the pipeline
+    pipeline = DiarizationPipeline()
 
-    if return_code != 0:
-        logging.warning(
-            "Source splitting failed, using original audio file. "
-            "Use --no-stem argument to disable it."
+    try:
+        # Process audio stemming if needed
+        vocal_target = pipeline._process_audio_stemming(args.audio, args)
+
+        # Start NeMo process in parallel
+        logging.info("Starting Nemo process with vocal_target: ", vocal_target)
+        nemo_process = subprocess.Popen(
+            [
+                "python",
+                "nemo_process.py",
+                "-a",
+                vocal_target,
+                "--device",
+                args.device,
+                "--temp-dir",
+                pipeline.TEMP_DIR,
+            ],
+            stderr=subprocess.PIPE,
         )
-        vocal_target = args.audio
-    else:
-        vocal_target = os.path.join(
-            TEMP_DIR,
-            "htdemucs",
-            os.path.splitext(os.path.basename(args.audio))[0],
-            "vocals.wav",
+
+        # Get transcription and word timestamps
+        audio_waveform, word_timestamps, scores, info = pipeline._transcribe_audio(
+            vocal_target, args
         )
-else:
-    vocal_target = args.audio
 
-logging.info("Starting Nemo process with vocal_target: ", vocal_target)
-nemo_process = subprocess.Popen(
-    [
-        "python",
-        "nemo_process.py",
-        "-a",
-        vocal_target,
-        "--device",
-        args.device,
-        "--temp-dir",
-        TEMP_DIR,
-    ],
-    stderr=subprocess.PIPE,
-)
+        # Wait for NeMo process to complete
+        nemo_return_code = nemo_process.wait()
+        nemo_error_trace = nemo_process.stderr.read()
+        assert nemo_return_code == 0, (
+            "Diarization failed with the following error:"
+            f"\n{nemo_error_trace.decode('utf-8')}"
+        )
 
-# Transcribe the audio file
-whisper_model = faster_whisper.WhisperModel(
-    args.model_name,
-    device=args.device,
-    compute_type=mtypes[args.device],
-    download_root=WHISPER_CACHE_DIR,
-)
-whisper_pipeline = faster_whisper.BatchedInferencePipeline(whisper_model)
-audio_waveform = faster_whisper.decode_audio(vocal_target)
-suppress_tokens = (
-    find_numeral_symbol_tokens(whisper_model.hf_tokenizer)
-    if args.suppress_numerals
-    else [-1]
-)
+        # Read speaker timestamps
+        speaker_ts = []
+        with open(
+            os.path.join(pipeline.TEMP_DIR, "pred_rttms", "mono_file.rttm"), "r"
+        ) as f:
+            lines = f.readlines()
+            for line in lines:
+                line_list = line.split(" ")
+                s = int(float(line_list[5]) * 1000)
+                e = s + int(float(line_list[8]) * 1000)
+                speaker_conf = float(line_list[10]) if line_list[10] != "<NA>" else 1.0
+                speaker_id = int(line_list[11].split("_")[-1])
+                speaker_ts.append([s, e, speaker_id, speaker_conf])
 
-if args.batch_size > 0:
-    transcript_segments, info = whisper_pipeline.transcribe(
-        audio_waveform,
-        language,
-        suppress_tokens=suppress_tokens,
-        batch_size=args.batch_size,
-    )
-else:
-    transcript_segments, info = whisper_model.transcribe(
-        audio_waveform,
-        language,
-        suppress_tokens=suppress_tokens,
-        vad_filter=True,
-    )
+        # Create word-speaker mapping
+        wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
 
-full_transcript = "".join(segment.text for segment in transcript_segments)
+        # Add punctuation if available
+        wsm = pipeline._add_punctuation(wsm, info, args)
 
-# clear gpu vram
-del whisper_model, whisper_pipeline
-torch.cuda.empty_cache()
+        # Create final output
+        pipeline._create_output(wsm, speaker_ts, scores, args.audio)
+
+    finally:
+        pipeline.cleanup()
 
 
-# Forced Alignment
-alignment_model, alignment_tokenizer = load_cached_alignment_model(
-    args.device,
-    torch.float16 if args.device == "cuda" else torch.float32,
-)
-
-emissions, stride = generate_emissions(
-    alignment_model,
-    torch.from_numpy(audio_waveform)
-    .to(alignment_model.dtype)
-    .to(alignment_model.device),
-    batch_size=args.batch_size,
-)
-
-del alignment_model
-torch.cuda.empty_cache()
-
-tokens_starred, text_starred = preprocess_text(
-    full_transcript,
-    romanize=True,
-    language=langs_to_iso[info.language],
-)
-
-segments, scores, blank_token = get_alignments(
-    emissions,
-    tokens_starred,
-    alignment_tokenizer,
-)
-
-spans = get_spans(tokens_starred, segments, blank_token)
-
-word_timestamps = postprocess_results(text_starred, spans, stride, scores)
-
-# Reading timestamps <> Speaker Labels mapping
-
-nemo_return_code = nemo_process.wait()
-nemo_error_trace = nemo_process.stderr.read()
-assert nemo_return_code == 0, (
-    "Diarization failed with the following error:"
-    f"\n{nemo_error_trace.decode('utf-8')}"
-)
-
-speaker_ts = []
-with open(os.path.join(TEMP_DIR, "pred_rttms", "mono_file.rttm"), "r") as f:
-    lines = f.readlines()
-    for line in lines:
-        line_list = line.split(" ")
-        s = int(float(line_list[5]) * 1000)
-        e = s + int(float(line_list[8]) * 1000)
-        speaker_ts.append([s, e, int(line_list[11].split("_")[-1])])
-
-wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
-
-if info.language in punct_model_langs:
-    # restoring punctuation in the transcript to help realign the sentences
-    punct_model = PunctuationModel(
-        model="kredor/punctuate-all", cache_dir=PUNCT_CACHE_DIR
-    )
-
-    words_list = list(map(lambda x: x["word"], wsm))
-
-    labled_words = punct_model.predict(words_list, chunk_size=230)
-
-    ending_puncts = ".?!"
-    model_puncts = ".,;:!?"
-
-    # We don't want to punctuate U.S.A. with a period. Right?
-    is_acronym = lambda x: re.fullmatch(r"\b(?:[a-zA-Z]\.){2,}", x)
-
-    for word_dict, labeled_tuple in zip(wsm, labled_words):
-        word = word_dict["word"]
-        if (
-            word
-            and labeled_tuple[1] in ending_puncts
-            and (word[-1] not in model_puncts or is_acronym(word))
-        ):
-            word += labeled_tuple[1]
-            if word.endswith(".."):
-                word = word.rstrip(".")
-            word_dict["word"] = word
-
-else:
-    logging.warning(
-        f"Punctuation restoration is not available for {info.language} language."
-        " Using the original punctuation."
-    )
-
-wsm = get_realigned_ws_mapping_with_punctuation(wsm)
-ssm = get_sentences_speaker_mapping(wsm, speaker_ts)
-
-# Create word-level output with confidence scores
-word_level_output = []
-for word_info, score in zip(wsm, scores):
-    # Convert log probability to regular probability using exp
-    confidence = float(np.exp(score)) if score is not None else 1.0
-
-    word_entry = {
-        "speaker": word_info["speaker"],  # Already a number
-        "start": word_info["start_time"] / 1000.0,  # Convert to seconds
-        "end": word_info["end_time"] / 1000.0,  # Convert to seconds
-        "word": word_info["word"].strip(),
-        "confidence": confidence,
-    }
-    word_level_output.append(word_entry)
-
-# Create segment-level output with words grouped under each segment
-segment_output = []
-current_word_idx = 0
-for segment in ssm:
-    # Extract speaker number from the "Speaker X" format
-    speaker_id = int(segment["speaker"].split()[-1])
-    segment_entry = {
-        "speaker": speaker_id,  # Use the number instead of string
-        "start": segment["start_time"] / 1000.0,  # Convert to seconds
-        "end": segment["end_time"] / 1000.0,  # Convert to seconds
-        "text": segment["text"].strip(),
-        "words": [],
-    }
-
-    # Add all words that fall within this segment's time range
-    while (
-        current_word_idx < len(word_level_output)
-        and word_level_output[current_word_idx]["start"] <= segment["end_time"] / 1000.0
-    ):
-        if (
-            word_level_output[current_word_idx]["start"]
-            >= segment["start_time"] / 1000.0
-        ):
-            segment_entry["words"].append(word_level_output[current_word_idx])
-        current_word_idx += 1
-
-    segment_output.append(segment_entry)
-
-with open(f"{os.path.splitext(args.audio)[0]}.txt", "w", encoding="utf-8-sig") as f:
-    get_speaker_aware_transcript(ssm, f)
-
-with open(f"{os.path.splitext(args.audio)[0]}.srt", "w", encoding="utf-8-sig") as srt:
-    write_srt(ssm, srt)
-
-with open(
-    f"{os.path.splitext(args.audio)[0]}_segments.json", "w", encoding="utf-8-sig"
-) as f:
-    json.dump(segment_output, f, indent=2, ensure_ascii=False, default=str)
-
-cleanup(TEMP_DIR)
+if __name__ == "__main__":
+    main()
