@@ -3,5 +3,7 @@ __pycache__/
 *.txt
 *.wav
 *.mp3
+*.json
 *.m4a
+venv
 

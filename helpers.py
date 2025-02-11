@@ -312,7 +312,8 @@ def get_word_ts_anchor(s, e, option="start"):
 
 
 def get_words_speaker_mapping(wrd_ts, spk_ts, word_anchor_option="start"):
-    s, e, sp = spk_ts[0]
+    # Unpack the first speaker segment, ignoring confidence if present
+    s, e, sp = spk_ts[0][:3]  # Only take first 3 values
     wrd_pos, turn_idx = 0, 0
     wrd_spk_mapping = []
     for wrd_dict in wrd_ts:
@@ -325,7 +326,7 @@ def get_words_speaker_mapping(wrd_ts, spk_ts, word_anchor_option="start"):
         while wrd_pos > float(e):
             turn_idx += 1
             turn_idx = min(turn_idx, len(spk_ts) - 1)
-            s, e, sp = spk_ts[turn_idx]
+            s, e, sp = spk_ts[turn_idx][:3]  # Only take first 3 values
             if turn_idx == len(spk_ts) - 1:
                 e = get_word_ts_anchor(ws, we, option="end")
         wrd_spk_mapping.append(
@@ -434,7 +435,7 @@ def get_realigned_ws_mapping_with_punctuation(
 
 def get_sentences_speaker_mapping(word_speaker_mapping, spk_ts):
     sentence_checker = nltk.tokenize.PunktSentenceTokenizer().text_contains_sentbreak
-    s, e, spk = spk_ts[0]
+    s, e, spk = spk_ts[0][:3]
     prev_spk = spk
 
     snts = []
