@@ -3,8 +3,7 @@ import logging
 import os
 import re
 import subprocess
-import tempfile
-import shutil
+import sys
 import json
 import numpy as np
 
@@ -21,7 +20,7 @@ from ctc_forced_aligner import (
 )
 from deepmultilingualpunctuation import PunctuationModel
 
-from helpers import (
+from .helpers import (
     cleanup,
     find_numeral_symbol_tokens,
     get_realigned_ws_mapping_with_punctuation,
@@ -33,56 +32,11 @@ from helpers import (
     punct_model_langs,
     whisper_langs,
     write_srt,
+    write_txt,
 )
-from diarization_utils import DiarizationPipeline
+from .diarization_utils import DiarizationPipeline
 
 mtypes = {"cpu": "int8", "cuda": "float16"}
-
-# Set up cache directory for models
-CACHE_DIR = os.path.join(os.getcwd(), "checkpoints")
-WHISPER_CACHE_DIR = os.path.join(CACHE_DIR, "whisper")
-ALIGNMENT_CACHE_DIR = os.path.join(CACHE_DIR, "alignment")
-PUNCT_CACHE_DIR = os.path.join(CACHE_DIR, "punctuation")
-NEMO_CACHE_DIR = os.path.join(CACHE_DIR, "nemo")
-
-# Create temporary directory for processing
-TEMP_DIR = tempfile.mkdtemp()
-
-# Create cache directories if they don't exist
-os.makedirs(WHISPER_CACHE_DIR, exist_ok=True)
-os.makedirs(ALIGNMENT_CACHE_DIR, exist_ok=True)
-os.makedirs(PUNCT_CACHE_DIR, exist_ok=True)
-os.makedirs(NEMO_CACHE_DIR, exist_ok=True)
-
-# Set NeMo cache directory
-os.environ["NEMO_CACHE_DIR"] = NEMO_CACHE_DIR
-
-
-# Ensure cleanup of temporary directory
-def cleanup_temp():
-    """Clean up temporary directory and its contents."""
-    if os.path.exists(TEMP_DIR):
-        shutil.rmtree(TEMP_DIR)
-
-
-# Register cleanup on normal program exit
-import atexit
-
-atexit.register(cleanup_temp)
-
-
-def load_cached_alignment_model(device, dtype):
-    """Load the alignment model with caching support."""
-    # Set HF cache directory for the alignment model
-    os.environ["TRANSFORMERS_CACHE"] = ALIGNMENT_CACHE_DIR
-    os.environ["HF_HOME"] = ALIGNMENT_CACHE_DIR
-    # Use the default model path from the library
-    return load_alignment_model(
-        device=device,
-        model_path="MahmoudAshraf/mms-300m-1130-forced-aligner",
-        dtype=dtype,
-    )
-
 
 # Initialize parser
 parser = argparse.ArgumentParser()
@@ -151,11 +105,12 @@ def main():
         vocal_target = pipeline._process_audio_stemming(args.audio, args)
 
         # Start NeMo process in parallel
-        logging.info("Starting Nemo process with vocal_target: ", vocal_target)
+        logging.info(f"Starting Nemo process with vocal_target: {vocal_target}")
         nemo_process = subprocess.Popen(
             [
-                "python",
-                "nemo_process.py",
+                sys.executable,  # Use the current Python interpreter
+                "-m",
+                "whisper_diarization.nemo_process",
                 "-a",
                 vocal_target,
                 "--device",
@@ -163,7 +118,9 @@ def main():
                 "--temp-dir",
                 pipeline.TEMP_DIR,
             ],
+            stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=os.environ.copy(),  # Pass current environment
         )
 
         # Get transcription and word timestamps

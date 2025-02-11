@@ -6,7 +6,7 @@ import torch
 from nemo.collections.asr.models.msdd_models import NeuralDiarizer
 from pydub import AudioSegment
 
-from helpers import create_config
+from .helpers import create_config
 
 parser = argparse.ArgumentParser()
 parser.add_argument(

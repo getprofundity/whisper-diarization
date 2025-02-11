@@ -19,7 +19,7 @@ from ctc_forced_aligner import (
 )
 from deepmultilingualpunctuation import PunctuationModel
 
-from helpers import (
+from .helpers import (
     find_numeral_symbol_tokens,
     get_realigned_ws_mapping_with_punctuation,
     get_sentences_speaker_mapping,
@@ -28,6 +28,7 @@ from helpers import (
     langs_to_iso,
     write_srt,
     punct_model_langs,
+    create_config,
 )
 
 # Model type mapping
@@ -172,7 +173,6 @@ class DiarizationPipeline:
         """Get speaker timestamps from NeMo diarization."""
         import torchaudio
         from nemo.collections.asr.models.msdd_models import NeuralDiarizer
-        from helpers import create_config
 
         # Convert audio to mono for NeMo compatibility
         audio_waveform = faster_whisper.decode_audio(audio_path)
