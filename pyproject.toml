@@ -28,8 +28,8 @@ Homepage = "https://github.com/tylerkahn/whisper-diarization"
 Repository = "https://github.com/tylerkahn/whisper-diarization"
 
 [project.scripts]
-diarize = "diarize:main"
-diarize-parallel = "diarize_parallel:main"
+diarize = "whisper_diarization.diarize:main"
+diarize-parallel = "whisper_diarization.diarize_parallel:main"
 
 [tool.setuptools]
 packages = ["whisper_diarization"]
