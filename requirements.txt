@@ -1,11 +1,16 @@
-wget
-nemo_toolkit[asr]==2.0.0rc0
-nltk
-faster-whisper>=1.1.0
+torch>=2.0.1
+torchaudio>=2.0.2
+faster-whisper>=0.9.0
+numpy>=1.24.3
+nemo-toolkit[asr]>=1.20.0
+transformers>=4.36.2
+omegaconf>=2.3.0
+nltk>=3.8.1
+wget>=3.2
+pydub>=0.25.1
+packaging>=23.2
 git+https://github.com/MahmoudAshraf97/demucs.git
 git+https://github.com/oliverguhr/deepmultilingualpunctuation.git
 git+https://github.com/MahmoudAshraf97/ctc-forced-aligner.git
 cython
-numpy
-typing_extensions
 
