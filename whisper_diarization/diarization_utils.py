@@ -281,7 +281,7 @@ class DiarizationPipeline:
         return get_realigned_ws_mapping_with_punctuation(wsm)
 
     def _create_output(
-        self, wsm: List, speaker_ts: List, scores: List, audio_path: str
+        self, wsm: List, speaker_ts: List, scores: List, audio_path: str | None = None
     ) -> Dict:
         """Create final output with word and segment level information."""
         ssm = get_sentences_speaker_mapping(wsm, speaker_ts)
@@ -326,16 +326,17 @@ class DiarizationPipeline:
 
             segment_output.append(segment_entry)
 
-        # Write output files
-        base_path = os.path.splitext(audio_path)[0]
-        with open(f"{base_path}.txt", "w", encoding="utf-8-sig") as f:
-            get_speaker_aware_transcript(ssm, f)
+        if audio_path is not None:
+            # Write output files
+            base_path = os.path.splitext(audio_path)[0]
+            with open(f"{base_path}.txt", "w", encoding="utf-8-sig") as f:
+                get_speaker_aware_transcript(ssm, f)
 
-        with open(f"{base_path}.srt", "w", encoding="utf-8-sig") as srt:
-            write_srt(ssm, srt)
+            with open(f"{base_path}.srt", "w", encoding="utf-8-sig") as srt:
+                write_srt(ssm, srt)
 
-        with open(f"{base_path}_segments.json", "w", encoding="utf-8-sig") as f:
-            json.dump(segment_output, f, indent=2, ensure_ascii=False, default=str)
+            with open(f"{base_path}_segments.json", "w", encoding="utf-8-sig") as f:
+                json.dump(segment_output, f, indent=2, ensure_ascii=False, default=str)
 
         return {
             "segments": segment_output,
