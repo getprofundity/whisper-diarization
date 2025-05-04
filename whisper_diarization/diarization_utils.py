@@ -8,6 +8,12 @@ import numpy as np
 import torch
 import faster_whisper
 from typing import Dict, List, Tuple, Any, Optional
+import subprocess
+import sys
+
+from nemo.collections.asr.models.msdd_models import NeuralDiarizer, EncDecDiarLabelModel
+from nemo.collections.asr.models.classification_models import EncDecClassificationModel
+from nemo.collections.asr.models.label_models import EncDecSpeakerLabelModel
 
 from ctc_forced_aligner import (
     generate_emissions,
@@ -28,11 +34,52 @@ from .helpers import (
     langs_to_iso,
     write_srt,
     punct_model_langs,
+    load_prototype_config,
     create_config,
+    get_speaker_timestamps
 )
 
 # Model type mapping
 mtypes = {"cpu": "int8", "cuda": "float16"}
+
+class ParallelNemo:
+    def __init__(self, audio_file_path: str, device: str, temp_dir_path: str, model_cache_path: str):
+        self.audio_file_path = audio_file_path
+        self.device = device
+        self.temp_dir_path = temp_dir_path
+        self.model_cache_path = model_cache_path
+
+    def start(self):
+        self.nemo_process = subprocess.Popen(
+            [
+                sys.executable,  # Use the current Python interpreter
+                "-m",
+                "whisper_diarization.nemo_process",
+                "-a",
+                self.audio_file_path,
+                "--device",
+                self.device,
+                "--temp-dir",
+                self.temp_dir_path,
+                "--model-cache-dir",
+                self.model_cache_path
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=os.environ.copy(),  # Pass current environment
+        )
+
+    def wait_for_results(self):
+        # Wait for NeMo process to complete
+        nemo_return_code = self.nemo_process.wait()
+        nemo_error_trace = self.nemo_process.stderr.read()
+        assert nemo_return_code == 0, (
+            "Diarization failed with the following error:"
+            f"\n{nemo_error_trace.decode('utf-8')}"
+        )
+
+        speaker_ts = get_speaker_timestamps(self.temp_dir_path)
+        return speaker_ts
 
 
 class DiarizationPipeline:
@@ -87,8 +134,9 @@ class DiarizationPipeline:
             vocal_target, args
         )
 
+        diarizer_config = self.create_diarizer_config()
         # Get speaker timestamps
-        speaker_timestamps = self._get_speaker_timestamps(vocal_target, args)
+        speaker_timestamps = self._get_speaker_timestamps(diarizer_config, vocal_target, args)
 
         # Create word-speaker mapping
         wsm = get_words_speaker_mapping(word_timestamps, speaker_timestamps, "start")
@@ -169,10 +217,24 @@ class DiarizationPipeline:
 
         return audio_waveform, word_timestamps, scores, info
 
-    def _get_speaker_timestamps(self, audio_path: str, args: Any) -> List:
+    def download_diarization_model(self):
+        msdd_model = EncDecDiarLabelModel.from_pretrained(model_name="diar_msdd_telephonic", return_model_file=True)
+        vad_model = EncDecClassificationModel.from_pretrained(model_name="vad_multilingual_marblenet", return_model_file=True)
+        # speaker_model = EncDecSpeakerLabelModel.from_pretrained(model_name="titanet_large", return_model_file=True)
+        nemo_prototype_model_config_path = load_prototype_config(self.NEMO_CACHE_DIR)
+        return nemo_prototype_model_config_path, msdd_model, vad_model
+
+    def create_diarizer_config(self):
+        config_path, msdd_model, vad_model = self.download_diarization_model()
+        return create_config(
+            output_dir=self.TEMP_DIR,
+            model_config_path=config_path,
+            msdd_model_path=msdd_model,
+            vad_model_path=vad_model)
+
+    def _get_speaker_timestamps(self, diarizer_config: Any, audio_path: str, args: Any) -> List:
         """Get speaker timestamps from NeMo diarization."""
         import torchaudio
-        from nemo.collections.asr.models.msdd_models import NeuralDiarizer
 
         # Convert audio to mono for NeMo compatibility
         audio_waveform = faster_whisper.decode_audio(audio_path)
@@ -185,28 +247,14 @@ class DiarizationPipeline:
         )
 
         # Initialize NeMo MSDD diarization model
-        msdd_model = NeuralDiarizer(cfg=create_config(self.TEMP_DIR)).to(args.device)
+        msdd_model = NeuralDiarizer(cfg=diarizer_config).to(args.device)
         msdd_model.diarize()
 
         del msdd_model
         torch.cuda.empty_cache()
 
-        # Read timestamps from RTTM file
-        speaker_ts = []
-        with open(
-            os.path.join(self.TEMP_DIR, "pred_rttms", "mono_file.rttm"), "r"
-        ) as f:
-            lines = f.readlines()
-            for line in lines:
-                line_list = line.split(" ")
-                s = int(float(line_list[5]) * 1000)
-                e = s + int(float(line_list[8]) * 1000)
-                # Extract speaker confidence from RTTM (field 10), handle '<NA>' case
-                speaker_conf = float(line_list[10]) if line_list[10] != "<NA>" else 1.0
-                speaker_id = int(line_list[11].split("_")[-1])
-                speaker_ts.append([s, e, speaker_id, speaker_conf])
+        return get_speaker_timestamps(self.TEMP_DIR)
 
-        return speaker_ts
 
     def _get_word_timestamps(
         self, audio_waveform: np.ndarray, transcript: str, info: Any, args: Any

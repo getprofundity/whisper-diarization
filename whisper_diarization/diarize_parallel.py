@@ -33,8 +33,9 @@ from .helpers import (
     whisper_langs,
     write_srt,
     write_txt,
+    get_speaker_timestamps
 )
-from .diarization_utils import DiarizationPipeline
+from .diarization_utils import DiarizationPipeline, ParallelNemo
 
 mtypes = {"cpu": "int8", "cuda": "float16"}
 
@@ -106,49 +107,21 @@ def main():
 
         # Start NeMo process in parallel
         logging.info(f"Starting Nemo process with vocal_target: {vocal_target}")
-        nemo_process = subprocess.Popen(
-            [
-                sys.executable,  # Use the current Python interpreter
-                "-m",
-                "whisper_diarization.nemo_process",
-                "-a",
-                vocal_target,
-                "--device",
-                args.device,
-                "--temp-dir",
-                pipeline.TEMP_DIR,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=os.environ.copy(),  # Pass current environment
+        parallel_nemo = ParallelNemo(
+            vocal_target,
+            args.device,
+            pipeline.TEMP_DIR,
+            pipeline.CACHE_DIR,
         )
+        parallel_nemo.start()
 
         # Get transcription and word timestamps
         audio_waveform, word_timestamps, scores, info = pipeline._transcribe_audio(
             vocal_target, args
         )
 
-        # Wait for NeMo process to complete
-        nemo_return_code = nemo_process.wait()
-        nemo_error_trace = nemo_process.stderr.read()
-        assert nemo_return_code == 0, (
-            "Diarization failed with the following error:"
-            f"\n{nemo_error_trace.decode('utf-8')}"
-        )
-
-        # Read speaker timestamps
-        speaker_ts = []
-        with open(
-            os.path.join(pipeline.TEMP_DIR, "pred_rttms", "mono_file.rttm"), "r"
-        ) as f:
-            lines = f.readlines()
-            for line in lines:
-                line_list = line.split(" ")
-                s = int(float(line_list[5]) * 1000)
-                e = s + int(float(line_list[8]) * 1000)
-                speaker_conf = float(line_list[10]) if line_list[10] != "<NA>" else 1.0
-                speaker_id = int(line_list[11].split("_")[-1])
-                speaker_ts.append([s, e, speaker_id, speaker_conf])
+        # wait for nemo process to finish
+        speaker_ts = parallel_nemo.wait_for_results()
 
         # Create word-speaker mapping
         wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")

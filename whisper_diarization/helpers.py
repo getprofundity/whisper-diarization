@@ -248,18 +248,19 @@ langs_to_iso = {
     "zh": "chi",
 }
 
-
-def create_config(output_dir):
+def load_prototype_config(config_dir):
     DOMAIN_TYPE = "telephonic"
-    CONFIG_LOCAL_DIRECTORY = "nemo_msdd_configs"
     CONFIG_FILE_NAME = f"diar_infer_{DOMAIN_TYPE}.yaml"
-    MODEL_CONFIG_PATH = os.path.join(CONFIG_LOCAL_DIRECTORY, CONFIG_FILE_NAME)
+    CONFIG_URL = f"https://raw.githubusercontent.com/NVIDIA/NeMo/main/examples/speaker_tasks/diarization/conf/inference/{CONFIG_FILE_NAME}"
+    MODEL_CONFIG_PATH = os.path.join(config_dir, CONFIG_FILE_NAME)
     if not os.path.exists(MODEL_CONFIG_PATH):
-        os.makedirs(CONFIG_LOCAL_DIRECTORY, exist_ok=True)
+        os.makedirs(config_dir, exist_ok=True)
         CONFIG_URL = f"https://raw.githubusercontent.com/NVIDIA/NeMo/main/examples/speaker_tasks/diarization/conf/inference/{CONFIG_FILE_NAME}"
         MODEL_CONFIG_PATH = wget.download(CONFIG_URL, MODEL_CONFIG_PATH)
+    return MODEL_CONFIG_PATH
 
-    config = OmegaConf.load(MODEL_CONFIG_PATH)
+def create_config(output_dir, model_config_path, vad_model_path, msdd_model_path):
+    config = OmegaConf.load(model_config_path)
 
     data_dir = os.path.join(output_dir, "data")
     os.makedirs(data_dir, exist_ok=True)
@@ -277,8 +278,8 @@ def create_config(output_dir):
         json.dump(meta, fp)
         fp.write("\n")
 
-    pretrained_vad = "vad_multilingual_marblenet"
-    pretrained_speaker_model = "titanet_large"
+    pretrained_vad = vad_model_path
+    pretrained_speaker_model = "titanet_large" # this is loaded from the msdd_model bin
     config.num_workers = 0
     config.diarizer.manifest_filepath = os.path.join(data_dir, "input_manifest.json")
     config.diarizer.out_dir = (
@@ -297,7 +298,7 @@ def create_config(output_dir):
     config.diarizer.vad.parameters.offset = 0.6
     config.diarizer.vad.parameters.pad_offset = -0.05
     config.diarizer.msdd_model.model_path = (
-        "diar_msdd_telephonic"  # Telephonic speaker diarization model
+        msdd_model_path  # Telephonic speaker diarization model
     )
 
     return config
@@ -309,6 +310,24 @@ def get_word_ts_anchor(s, e, option="start"):
     elif option == "mid":
         return (s + e) / 2
     return s
+
+def get_speaker_timestamps(output_temp_dir_path: str):
+    # Read timestamps from RTTM file
+    speaker_ts = []
+    with open(
+        os.path.join(output_temp_dir_path, "pred_rttms", "mono_file.rttm"), "r"
+    ) as f:
+        lines = f.readlines()
+        for line in lines:
+            line_list = line.split(" ")
+            s = int(float(line_list[5]) * 1000)
+            e = s + int(float(line_list[8]) * 1000)
+            # Extract speaker confidence from RTTM (field 10), handle '<NA>' case
+            speaker_conf = float(line_list[10]) if line_list[10] != "<NA>" else 1.0
+            speaker_id = int(line_list[11].split("_")[-1])
+            speaker_ts.append([s, e, speaker_id, speaker_conf])
+
+    return speaker_ts
 
 
 def get_words_speaker_mapping(wrd_ts, spk_ts, word_anchor_option="start"):

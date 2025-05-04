@@ -6,7 +6,8 @@ import torch
 from nemo.collections.asr.models.msdd_models import NeuralDiarizer
 from pydub import AudioSegment
 
-from .helpers import create_config
+from .helpers import create_config, load_prototype_config
+from .diarization_utils import DiarizationPipeline
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -24,6 +25,12 @@ parser.add_argument(
     help="temporary directory for processing",
     required=True,
 )
+parser.add_argument(
+    "--model-cache-dir",
+    dest="model_cache_dir",
+    help="temporary directory for processing",
+    required=False,
+)
 args = parser.parse_args()
 
 # convert audio to mono for NeMo compatibility
@@ -32,5 +39,9 @@ os.makedirs(args.temp_dir, exist_ok=True)
 sound.export(os.path.join(args.temp_dir, "mono_file.wav"), format="wav")
 
 # Initialize NeMo MSDD diarization model
-msdd_model = NeuralDiarizer(cfg=create_config(args.temp_dir)).to(args.device)
+
+pipeline = DiarizationPipeline(args.model_cache_dir)
+diarizer_config = pipeline.create_diarizer_config()
+
+msdd_model = NeuralDiarizer(cfg=diarizer_config).to(args.device)
 msdd_model.diarize()
