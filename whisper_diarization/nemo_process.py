@@ -5,6 +5,8 @@ import torch
 
 from nemo.collections.asr.models.msdd_models import NeuralDiarizer
 from pydub import AudioSegment
+from faster_whisper import decode_audio
+import torchaudio
 
 from .helpers import create_config, load_prototype_config
 from .diarization_utils import DiarizationPipeline
@@ -33,15 +35,25 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-# convert audio to mono for NeMo compatibility
-sound = AudioSegment.from_file(args.audio).set_channels(1)
-os.makedirs(args.temp_dir, exist_ok=True)
-sound.export(os.path.join(args.temp_dir, "mono_file.wav"), format="wav")
-
-# Initialize NeMo MSDD diarization model
-
 pipeline = DiarizationPipeline(args.model_cache_dir)
-diarizer_config = pipeline.create_diarizer_config()
+pipeline.TEMP_DIR = args.temp_dir
+pipeline._get_speaker_timestamps(pipeline.create_diarizer_config(), args.audio, args.device)
 
-msdd_model = NeuralDiarizer(cfg=diarizer_config).to(args.device)
-msdd_model.diarize()
+
+#audio_waveform = decode_audio(args.audio)
+#os.makedirs(args.temp_dir, exist_ok=True)
+#torchaudio.save(
+#    os.path.join(args.temp_dir, "mono_file.wav"),
+#    torch.from_numpy(audio_waveform).unsqueeze(0).float(),
+#    16000,
+#    channels_first=True,
+#)
+#
+## Initialize NeMo MSDD diarization model
+#
+#pipeline = DiarizationPipeline(args.model_cache_dir)
+#pipeline.TEMP_DIR = args.temp_dir
+#diarizer_config = pipeline.create_diarizer_config()
+#
+#msdd_model = NeuralDiarizer(cfg=diarizer_config).to(args.device)
+#msdd_model.diarize()

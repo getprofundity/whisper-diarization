@@ -232,7 +232,7 @@ class DiarizationPipeline:
             msdd_model_path=msdd_model,
             vad_model_path=vad_model)
 
-    def _get_speaker_timestamps(self, diarizer_config: Any, audio_path: str, args: Any) -> List:
+    def _get_speaker_timestamps(self, diarizer_config: Any, audio_path: str, device: str) -> List:
         """Get speaker timestamps from NeMo diarization."""
         import torchaudio
 
@@ -247,7 +247,7 @@ class DiarizationPipeline:
         )
 
         # Initialize NeMo MSDD diarization model
-        msdd_model = NeuralDiarizer(cfg=diarizer_config).to(args.device)
+        msdd_model = NeuralDiarizer(cfg=diarizer_config).to(device)
         msdd_model.diarize()
 
         del msdd_model
