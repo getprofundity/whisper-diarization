@@ -94,6 +94,9 @@ class DiarizationPipeline:
         self.PUNCT_CACHE_DIR = os.path.join(self.CACHE_DIR, "punctuation")
         self.NEMO_CACHE_DIR = os.path.join(self.CACHE_DIR, "nemo")
 
+        os.environ["TRANSFORMERS_CACHE"] = self.CACHE_DIR
+        os.environ["HF_HOME"] = self.CACHE_DIR
+
         # Create cache directories
         for directory in [
             self.WHISPER_CACHE_DIR,
@@ -116,8 +119,6 @@ class DiarizationPipeline:
 
     def load_cached_alignment_model(self, device: str, dtype: torch.dtype):
         """Load alignment model with caching support."""
-        os.environ["TRANSFORMERS_CACHE"] = self.ALIGNMENT_CACHE_DIR
-        os.environ["HF_HOME"] = self.ALIGNMENT_CACHE_DIR
         return load_alignment_model(
             device=device,
             model_path="MahmoudAshraf/mms-300m-1130-forced-aligner",
@@ -303,8 +304,7 @@ class DiarizationPipeline:
             return wsm
 
         punct_model = PunctuationModel(
-            model="kredor/punctuate-all",
-            cache_dir=self.PUNCT_CACHE_DIR,
+            model="kredor/punctuate-all"
         )
 
         words_list = list(map(lambda x: x["word"], wsm))
