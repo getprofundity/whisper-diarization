@@ -10,6 +10,7 @@ import faster_whisper
 from typing import Dict, List, Tuple, Any, Optional
 import subprocess
 import sys
+from huggingface_hub import snapshot_download
 
 from nemo.collections.asr.models.msdd_models import NeuralDiarizer, EncDecDiarLabelModel
 from nemo.collections.asr.models.classification_models import EncDecClassificationModel
@@ -304,9 +305,15 @@ class DiarizationPipeline:
             )
             return wsm
 
-        punct_model = PunctuationModel(
-            model="kredor/punctuate-all",
+
+        modal_path = snapshot_download(
+            repo_id="kredor/punctuate-all",
+            local_dir=self.PUNCT_CACHE_DIR,
             cache_dir=self.PUNCT_CACHE_DIR,
+        )
+
+        punct_model = PunctuationModel(
+            model=modal_path
         )
 
         words_list = list(map(lambda x: x["word"], wsm))
