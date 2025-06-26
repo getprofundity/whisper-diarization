@@ -123,6 +123,7 @@ class DiarizationPipeline:
             device=device,
             model_path="MahmoudAshraf/mms-300m-1130-forced-aligner",
             dtype=dtype,
+            cache_dir=self.ALIGNMENT_CACHE_DIR,
         )
 
     def process_audio(self, audio_path: str, args: Any) -> Dict:
@@ -304,7 +305,8 @@ class DiarizationPipeline:
             return wsm
 
         punct_model = PunctuationModel(
-            model="kredor/punctuate-all"
+            model="kredor/punctuate-all",
+            cache_dir=self.PUNCT_CACHE_DIR,
         )
 
         words_list = list(map(lambda x: x["word"], wsm))
