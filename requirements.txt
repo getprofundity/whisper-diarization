@@ -11,6 +11,6 @@ pydub>=0.25.1
 packaging>=23.2
 cython
 demucs @ git+https://github.com/MahmoudAshraf97/demucs.git
-deepmultilingualpunctuation @ git+https://github.com/oliverguhr/deepmultilingualpunctuation.git
-ctc-forced-aligner @ git+https://github.com/MahmoudAshraf97/ctc-forced-aligner.git
+deepmultilingualpunctuation @ git+https://github.com/getprofundity/deepmultilingualpunctuation.git
+ctc-forced-aligner @ git+https://github.com/getprofundity/ctc-forced-aligner.git
 
