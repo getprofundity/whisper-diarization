@@ -30,14 +30,14 @@ from .helpers import (
     find_numeral_symbol_tokens,
     get_realigned_ws_mapping_with_punctuation,
     get_sentences_speaker_mapping,
-    get_speaker_aware_transcript,
+    get_speaker_aware_result,
     get_words_speaker_mapping,
     langs_to_iso,
     write_srt,
     punct_model_langs,
     load_prototype_config,
     create_config,
-    get_speaker_timestamps
+    get_speaker_timestamps,
 )
 
 # Model type mapping
@@ -387,8 +387,9 @@ class DiarizationPipeline:
         if audio_path is not None:
             # Write output files
             base_path = os.path.splitext(audio_path)[0]
+            result = get_speaker_aware_result(ssm)
             with open(f"{base_path}.txt", "w", encoding="utf-8-sig") as f:
-                f.write(get_speaker_aware_transcript(ssm))
+                f.write(result["transcript"])
 
             with open(f"{base_path}.srt", "w", encoding="utf-8-sig") as srt:
                 write_srt(ssm, srt)
@@ -399,4 +400,5 @@ class DiarizationPipeline:
         return {
             "segments": segment_output,
             "word_timestamps": word_level_output,
+            "num_speakers": result["num_speakers"],
         }
