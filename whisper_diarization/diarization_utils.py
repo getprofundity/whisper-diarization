@@ -305,19 +305,20 @@ class DiarizationPipeline:
             )
             return wsm
 
-
         modal_path = snapshot_download(
             repo_id="kredor/punctuate-all",
             local_dir=self.PUNCT_CACHE_DIR,
             cache_dir=self.PUNCT_CACHE_DIR,
         )
 
-        punct_model = PunctuationModel(
-            model=modal_path
-        )
+        punct_model = PunctuationModel(model=modal_path)
 
         words_list = list(map(lambda x: x["word"], wsm))
         labeled_words = punct_model.predict(words_list, chunk_size=230)
+
+        # Cleanup
+        del punct_model
+        torch.cuda.empty_cache()
 
         ending_puncts = ".?!"
         model_puncts = ".,;:!?"
