@@ -387,7 +387,7 @@ class DiarizationPipeline:
             # Write output files
             base_path = os.path.splitext(audio_path)[0]
             with open(f"{base_path}.txt", "w", encoding="utf-8-sig") as f:
-                get_speaker_aware_transcript(ssm, f)
+                f.write(get_speaker_aware_transcript(ssm))
 
             with open(f"{base_path}.srt", "w", encoding="utf-8-sig") as srt:
                 write_srt(ssm, srt)
